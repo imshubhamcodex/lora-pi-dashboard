@@ -9,5 +9,8 @@ new Vue({
   vuetify,
   router,
   store,
+  created() {
+    this.$store.dispatch("listenRx")
+  },
   render: h => h(App)
 }).$mount('#app')
