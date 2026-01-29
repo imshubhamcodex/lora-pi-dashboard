@@ -90,12 +90,20 @@ export default {
         { text: "Timestamp", value: "ts_date_time" },
         { text: "Payload", value: "payload" },
       ],
+
+      /* ================= CANVAS / GRID ================= */
       h_w: 800, // canvas width & height
-      gridSize: 10, // 100 x 100 grid
-      cellSize: 0, // computed
+      gridRows: 20, // number of rows (Y axis)
+      gridCols: 20, // number of columns (X axis)
+      cellW: 0, // computed cell width
+      cellH: 0, // computed cell height
+
+      /* ================= STATE ================= */
       ctx: null,
       dronePath: [],
-      gridData: {}, // store cell info for hover
+      gridData: {},
+
+      /* ================= TOOLTIP ================= */
       tooltip: "",
       tooltipX: 0,
       tooltipY: 0,
@@ -118,30 +126,31 @@ export default {
   },
 
   mounted() {
-    this.cellSize = this.h_w / this.gridSize;
+    this.cellW = this.h_w / this.gridCols;
+    this.cellH = this.h_w / this.gridRows;
     this.ctx = this.$refs.gridCanvas.getContext("2d");
     this.drawGrid();
   },
 
   methods: {
-    // Draw empty grid
+    /* ================= DRAW GRID ================= */
     drawGrid() {
       const ctx = this.ctx;
       ctx.clearRect(0, 0, this.h_w, this.h_w);
       ctx.strokeStyle = "#eee";
 
-      // vertical lines
-      for (let i = 0; i <= this.gridSize; i++) {
-        const x = i * this.cellSize;
+      // vertical lines (columns)
+      for (let c = 0; c <= this.gridCols; c++) {
+        const x = c * this.cellW;
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, this.h_w);
         ctx.stroke();
       }
 
-      // horizontal lines
-      for (let i = 0; i <= this.gridSize; i++) {
-        const y = i * this.cellSize;
+      // horizontal lines (rows)
+      for (let r = 0; r <= this.gridRows; r++) {
+        const y = r * this.cellH;
         ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(this.h_w, y);
@@ -149,26 +158,25 @@ export default {
       }
     },
 
-    // Parse single packet
+    /* ================= PARSE PAYLOAD ================= */
     parsePacket(payload) {
       const cells = [];
-      // split multiple cells
-      const cellParts = payload.split(/\[ID\]:\d+/).filter(Boolean);
+      const parts = payload.split(/\[ID\]:\d+/).filter(Boolean);
 
-      cellParts.forEach((part) => {
+      parts.forEach((part) => {
         const cellMatch = part.match(/CELL \((\d+),\s*(\d+)\)/);
-        const gpsMatch = part.match(/GPS (\d+),(\d+)/);
         if (!cellMatch) return;
 
         const x = parseInt(cellMatch[1]);
         const y = parseInt(cellMatch[2]);
 
+        const gpsMatch = part.match(/GPS (\d+),(\d+)/);
         const gps = gpsMatch ? { lat: gpsMatch[1], lon: gpsMatch[2] } : null;
 
-        // parse diseases: name: infected: healthy
         const diseaseMatches = [
           ...part.matchAll(/(\w+)\s*:\s*(\d+)\s*:\s*(\d+)/g),
         ];
+
         const diseases = diseaseMatches.map((m) => ({
           name: m[1],
           infected: parseInt(m[2]),
@@ -181,123 +189,112 @@ export default {
       return cells;
     },
 
-    // Update grid with packets
+    /* ================= UPDATE GRID ================= */
     updateGrid(packets) {
       const ctx = this.ctx;
-      this.dronePath = [];
       this.gridData = {};
+      this.dronePath = [];
       this.drawGrid();
 
       packets.forEach((packet) => {
         const cells = this.parsePacket(packet.payload);
-        cells.forEach((cell) => {
-          const { x, y, gps, diseases } = cell;
-          if (x >= this.gridSize || y >= this.gridSize) return;
 
-          // store for hover
+        cells.forEach(({ x, y, gps, diseases }) => {
+          if (x >= this.gridCols || y >= this.gridRows) return;
+
           this.gridData[`${x},${y}`] = { gps, diseases };
 
-          // compute color (simple: red intensity by infection ratio)
-          let totalInfected = diseases.reduce((a, d) => a + d.infected, 0);
-          let totalHealthy = diseases.reduce((a, d) => a + d.healthy, 0);
+          const infected = diseases.reduce((a, d) => a + d.infected, 0);
+          const healthy = diseases.reduce((a, d) => a + d.healthy, 0);
 
-          let color = "#bdbdbd"; // default NO DATA
-          if (totalInfected > 0) {
-            const severity = totalInfected / (totalInfected + totalHealthy);
-            color = `rgba(255,0,0,${Math.min(severity, 1)})`;
-          } else if (diseases.length > 0) {
+          let color = "#bdbdbd";
+          if (infected > 0) {
+            const sev = infected / (infected + healthy);
+            color = `rgba(255,0,0,${Math.min(sev, 1)})`;
+          } else if (!infected) {
             color = "green";
           }
 
-          const canvasY = this.h_w - (y + 1) * this.cellSize;
+          const canvasY = this.h_w - (y + 1) * this.cellH;
 
-          // fill cell
           ctx.fillStyle = color;
-          ctx.fillRect(
-            x * this.cellSize,
-            canvasY,
-            this.cellSize,
-            this.cellSize,
-          );
+          ctx.fillRect(x * this.cellW, canvasY, this.cellW, this.cellH);
 
-          // draw label
           ctx.fillStyle = "black";
-          ctx.font = `${this.cellSize / 3}px Arial`;
+          ctx.font = `${Math.min(this.cellW, this.cellH) / 3}px Arial`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillText(
             `${x},${y}`,
-            x * this.cellSize + this.cellSize / 2,
-            canvasY + this.cellSize / 2,
+            x * this.cellW + this.cellW / 2,
+            canvasY + this.cellH / 2,
           );
 
           this.dronePath.push({ x, y });
         });
       });
 
-      // draw drone as triangle at last position
-      if (this.dronePath.length) {
-        const d = this.dronePath[this.dronePath.length - 1];
-        const canvasY = this.h_w - (d.y + 1) * this.cellSize;
-
-        const cx = d.x * this.cellSize + this.cellSize / 2;
-        const cy = canvasY + this.cellSize / 2;
-        const size = this.cellSize / 2; // size of triangle
-
-        ctx.fillStyle = "yellow";
-        ctx.beginPath();
-
-        // Triangle pointing upward
-        ctx.moveTo(cx, cy - size / 2); // top vertex
-        ctx.lineTo(cx - size / 2, cy + size / 2); // bottom left
-        ctx.lineTo(cx + size / 2, cy + size / 2); // bottom right
-        ctx.closePath();
-        ctx.fill();
-      }
+      this.drawDrone(ctx);
     },
 
-    // popup
-    onClickCell(e) {
-      const canvas = this.$refs.gridCanvas;
-      const rect = canvas.getBoundingClientRect();
+    /* ================= DRAW DRONE (TRIANGLE) ================= */
+    drawDrone(ctx) {
+      if (!this.dronePath.length) return;
 
-      // mouse position relative to canvas
+      const d = this.dronePath[this.dronePath.length - 1];
+      const canvasY = this.h_w - (d.y + 1) * this.cellH;
+
+      const cx = d.x * this.cellW + this.cellW / 2;
+      const cy = canvasY + this.cellH / 2;
+      const size = Math.min(this.cellW, this.cellH) * 0.6;
+
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - size / 2);
+      ctx.lineTo(cx - size / 2, cy + size / 2);
+      ctx.lineTo(cx + size / 2, cy + size / 2);
+      ctx.closePath();
+      ctx.fill();
+    },
+
+    /* ================= TOOLTIP CLICK ================= */
+    onClickCell(e) {
+      const rect = this.$refs.gridCanvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
 
-      // compute column
-      const col = Math.floor(mx / this.cellSize);
+      const col = Math.floor(mx / this.cellW);
+      const row = Math.floor((this.h_w - my) / this.cellH);
 
-      // compute row (flip Y for canvas)
-      let row = Math.floor((this.h_w - my) / this.cellSize);
-
-      // clamp row/col to grid
-      const clampedCol = Math.min(Math.max(col, 0), this.gridSize - 1);
-      row = Math.min(Math.max(row, 0), this.gridSize - 1);
-
-      const data = this.gridData[`${clampedCol},${row}`];
-
-      if (data) {
-        // tooltip position relative to container (canvas)
-        this.tooltipX = mx + 5;
-        this.tooltipY = my + 5;
-
-        let txt = `GPS: ${
-          data.gps ? data.gps.lat + "," + data.gps.lon : "N/A"
-        }\n`;
-        if (data.diseases.length) {
-          txt += data.diseases
-            .map(
-              (d) => `${d.name}: infected ${d.infected}, healthy ${d.healthy}`,
-            )
-            .join("\n");
-        } else {
-          txt += "NO DATA";
-        }
-        this.tooltip = txt;
-      } else {
+      if (col < 0 || col >= this.gridCols || row < 0 || row >= this.gridRows) {
         this.tooltip = "";
+        return;
       }
+
+      const data = this.gridData[`${col},${row}`];
+      if (!data) {
+        this.tooltip = "";
+        return;
+      }
+
+      this.tooltipX = mx + 6;
+      this.tooltipY = my + 6;
+
+      let txt = `CELL: (${col} , ${row})\n`;
+      txt += `GPS: ${data.gps ? `${data.gps.lat} , ${data.gps.lon}` : "N/A"}\n`;
+
+      if (data.diseases.length) {
+        txt += data.diseases
+          .map(
+            (d) =>
+              `DISEASE: ${d.name} | Infected ${d.infected} | Healthy ${d.healthy}`,
+          )
+          .join("\n");
+      } else {
+        txt += "NO DISEASES DETECTED";
+      }
+
+      this.tooltip = txt;
     },
   },
 };
